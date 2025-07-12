@@ -7,32 +7,55 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
     body {
-      background-color: #f4f6f8;
-      font-family: 'Segoe UI', sans-serif;
+      background-color: #f8f9fa;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
     .header {
       background: linear-gradient(135deg, #007bff, #0056b3);
       color: white;
-      padding: 2.5rem 1rem;
+      padding: 3rem 1rem;
       text-align: center;
-      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     }
     .header h1 {
-      font-size: 3rem;
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
     }
     .filters {
-      margin: 2rem 0 1rem;
+      margin: 2rem 0;
       text-align: center;
+      display: flex;
+      justify-content: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
     }
     .filters button {
-      margin: 0 0.3rem;
+      border-radius: 20px;
+      padding: 0.5rem 1.5rem;
+    }
+    .search-bar {
+      margin: 1rem auto;
+      max-width: 600px;
     }
     .news-card {
-      transition: all 0.3s ease;
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+      border: none;
+      border-radius: 10px;
+      overflow: hidden;
+      height: 100%;
     }
     .news-card:hover {
-      transform: translateY(-5px);
-      box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+      transform: translateY(-8px);
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
+    }
+    .news-card img {
+      object-fit: cover;
+      height: 200px;
+      width: 100%;
+    }
+    .card-body {
+      display: flex;
+      flex-direction: column;
     }
     .loading-spinner {
       display: none;
@@ -44,6 +67,18 @@
       text-align: center;
       padding: 1rem;
       color: #dc3545;
+      font-weight: 500;
+    }
+    .news-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1.5rem;
+      padding: 1rem;
+    }
+    @media (max-width: 768px) {
+      .news-grid {
+        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      }
     }
   </style>
 </head>
@@ -54,14 +89,17 @@
   </div>
 
   <div class="container">
+    <div class="search-bar">
+      <input type="text" id="search-input" class="form-control" placeholder="Search news..." aria-label="Search news">
+    </div>
     <div class="filters">
-      <button class="btn btn-outline-primary" onclick="fetchNews('general')">General</button>
+      <button class="btn btn-outline-primary active" onclick="fetchNews('general')">General</button>
       <button class="btn btn-outline-success" onclick="fetchNews('world')">World</button>
       <button class="btn btn-outline-danger" onclick="fetchNews('business')">Business</button>
       <button class="btn btn-outline-info" onclick="fetchNews('technology')">Technology</button>
     </div>
 
-    <div class="row" id="news-container"></div>
+    <div class="news-grid" id="news-container"></div>
     <div class="error-message" id="error-message"></div>
     <div class="loading-spinner" id="loading">
       <div class="spinner-border text-primary" role="status">
@@ -72,7 +110,11 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    // RSS feed URLs categorized for filtering
+    // Replace with your News API key from https://newsapi.org
+    const NEWS_API_KEY = 'YOUR_NEWS_API_KEY_HERE';
+    const CACHE_DURATION = 15 * 60 * 1000; // Cache for 15 minutes
+    const cache = {};
+
     const rssFeeds = {
       general: [
         'https://feeds.bbci.co.uk/news/rss.xml',
@@ -99,70 +141,142 @@
     const newsContainer = document.getElementById('news-container');
     const loadingSpinner = document.getElementById('loading');
     const errorMessage = document.getElementById('error-message');
+    const searchInput = document.getElementById('search-input');
 
-    async function fetchNews(category = 'general') {
+    // Debounce search input
+    let searchTimeout;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => fetchNews(null, searchInput.value.trim()), 500);
+    });
+
+    // Update active filter button
+    function updateActiveButton(category) {
+      document.querySelectorAll('.filters button').forEach(btn => {
+        btn.classList.toggle('active', btn.textContent.toLowerCase() === category);
+      });
+    }
+
+    async function fetchNews(category = 'general', searchQuery = '') {
       loadingSpinner.style.display = 'block';
       errorMessage.style.display = 'none';
       newsContainer.innerHTML = '';
+      updateActiveButton(category);
 
+      const cacheKey = `${category}_${searchQuery}`;
+      const now = Date.now();
+
+      // Check cache
+      if (cache[cacheKey] && (now - cache[cacheKey].timestamp) < CACHE_DURATION) {
+        displayNews(cache[cacheKey].articles);
+        loadingSpinner.style.display = 'none';
+        return;
+      }
+
+      // Try News API first
       try {
-        const corsProxy = 'https://api.allorigins.win/raw?url=';
-        const feeds = rssFeeds[category];
-        const articles = [];
-
-        for (const feedUrl of feeds) {
-          try {
-            const response = await fetch(corsProxy + encodeURIComponent(feedUrl), {
-              method: 'GET',
-              headers: { 'Accept': 'application/xml' }
-            });
-
-            if (!response.ok) {
-              throw new Error(`Failed to fetch RSS feed from ${feedUrl}: ${response.status}`);
-            }
-
-            const text = await response.text();
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(text, 'text/xml');
-
-            // Check for XML parsing errors
-            if (xmlDoc.querySelector('parsererror')) {
-              throw new Error(`Invalid XML from ${feedUrl}`);
-            }
-
-            const items = xmlDoc.querySelectorAll('item');
-            items.forEach(item => {
-              const title = item.querySelector('title')?.textContent?.trim() || 'No title';
-              const description = item.querySelector('description')?.textContent?.trim() || 'No description available';
-              const link = item.querySelector('link')?.textContent?.trim() || '#';
-              const pubDate = item.querySelector('pubDate')?.textContent?.trim() || 'Unknown date';
-              const source = link !== '#' ? new URL(link).hostname.replace('www.', '') : 'Unknown source';
-
-              // Validate data before adding
-              if (title && link && link !== '#') {
-                articles.push({ title, description, link, pubDate, source });
-              }
-            });
-          } catch (feedError) {
-            console.warn(`Error fetching or parsing feed ${feedUrl}:`, feedError.message);
-            // Continue with other feeds instead of stopping
-          }
+        const articles = await fetchNewsFromAPI(category, searchQuery);
+        if (articles.length > 0) {
+          cache[cacheKey] = { articles, timestamp: now };
+          displayNews(articles);
+          loadingSpinner.style.display = 'none';
+          return;
         }
+      } catch (apiError) {
+        console.warn('News API failed:', apiError.message);
+        errorMessage.style.display = 'block';
+        errorMessage.textContent = 'News API unavailable, switching to RSS feeds...';
+      }
 
+      // Fallback to RSS feeds
+      try {
+        const articles = await fetchNewsFromRSS(category);
         if (articles.length === 0) {
           throw new Error('No valid articles found from any feed.');
         }
-
-        // Sort articles by publication date (newest first)
-        articles.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+        cache[cacheKey] = { articles, timestamp: now };
         displayNews(articles);
-      } catch (error) {
-        console.error('Error:', error);
+      } catch (rssError) {
+        console.error('RSS Error:', rssError);
         errorMessage.style.display = 'block';
         errorMessage.textContent = 'Failed to load news. Please try again later.';
       } finally {
         loadingSpinner.style.display = 'none';
       }
+    }
+
+    async function fetchNewsFromAPI(category, searchQuery) {
+      let url = `https://newsapi.org/v2/top-headlines?apiKey=${NEWS_API_KEY}`;
+      if (searchQuery) {
+        url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(searchQuery)}&apiKey=${NEWS_API_KEY}`;
+      } else {
+        url += `&category=${category}`;
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`News API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (data.status !== 'ok') {
+        throw new Error('News API returned invalid response');
+      }
+
+      return data.articles.map(article => ({
+        title: article.title || 'No title',
+        description: article.description || 'No description available',
+        link: article.url || '#',
+        pubDate: article.publishedAt || 'Unknown date',
+        source: article.source.name || 'Unknown source',
+        image: article.urlToImage || 'https://via.placeholder.com/300x200'
+      })).filter(article => article.title && article.link && article.link !== '#');
+    }
+
+    async function fetchNewsFromRSS(category) {
+      const corsProxy = 'https://api.allorigins.win/raw?url=';
+      const feeds = rssFeeds[category];
+      const articles = [];
+
+      for (const feedUrl of feeds) {
+        try {
+          const response = await fetch(corsProxy + encodeURIComponent(feedUrl), {
+            method: 'GET',
+            headers: { 'Accept': 'application/xml' }
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch RSS feed from ${feedUrl}: ${response.status}`);
+          }
+
+          const text = await response.text();
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(text, 'text/xml');
+
+          if (xmlDoc.querySelector('parsererror')) {
+            throw new Error(`Invalid XML from ${feedUrl}`);
+          }
+
+          const items = xmlDoc.querySelectorAll('item');
+          items.forEach(item => {
+            const title = item.querySelector('title')?.textContent?.trim() || 'No title';
+            const description = item.querySelector('description')?.textContent?.trim() || 'No description available';
+            const link = item.querySelector('link')?.textContent?.trim() || '#';
+            const pubDate = item.querySelector('pubDate')?.textContent?.trim() || 'Unknown date';
+            const source = link !== '#' ? new URL(link).hostname.replace('www.', '') : 'Unknown source';
+            const image = item.querySelector('enclosure')?.getAttribute('url') || 'https://via.placeholder.com/300x200';
+
+            if (title && link && link !== '#') {
+              articles.push({ title, description, link, pubDate, source, image });
+            }
+          });
+        } catch (feedError) {
+          console.warn(`Error fetching or parsing feed ${feedUrl}:`, feedError.message);
+        }
+      }
+
+      // Sort by date and limit to 25 articles
+      return articles.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate)).slice(0, 25);
     }
 
     function displayNews(articles) {
@@ -173,15 +287,14 @@
 
       articles.forEach(article => {
         const newsCard = `
-          <div class="col-md-4 mb-4">
-            <div class="card news-card h-100 shadow-sm">
-              <div class="card-body d-flex flex-column">
-                <h5 class="card-title">${article.title}</h5>
-                <p class="card-text flex-grow-1">${article.description}</p>
-                <p class="text-muted">Source: ${article.source}</p>
-                <p class="text-muted small">Published: ${new Date(article.pubDate).toLocaleDateString()}</p>
-                <a href="${article.link}" target="_blank" class="btn btn-primary mt-auto">Read Full Article</a>
-              </div>
+          <div class="news-card card h-100 shadow-sm">
+            <img src="${article.image}" class="card-img-top" alt="${article.title}">
+            <div class="card-body">
+              <h5 class="card-title">${article.title}</h5>
+              <p class="card-text flex-grow-1">${article.description}</p>
+              <p class="text-muted">Source: ${article.source}</p>
+              <p class="text-muted small">Published: ${new Date(article.pubDate).toLocaleDateString()}</p>
+              <a href="${article.link}" target="_blank" class="btn btn-primary mt-auto">Read Full Article</a>
             </div>
           </div>
         `;
