@@ -39,6 +39,12 @@
       text-align: center;
       padding: 2rem;
     }
+    .error-message {
+      display: none;
+      text-align: center;
+      padding: 1rem;
+      color: #dc3545;
+    }
   </style>
 </head>
 <body>
@@ -50,16 +56,13 @@
   <div class="container">
     <div class="filters">
       <button class="btn btn-outline-primary" onclick="fetchNews('general')">General</button>
-      <button class="btn btn-outline-success" onclick="fetchNews('business')">Business</button>
-      <button class="btn btn-outline-danger" onclick="fetchNews('health')">Health</button>
-      <button class="btn btn-outline-warning" onclick="fetchNews('entertainment')">Entertainment</button>
-      <button class="btn btn-outline-info" onclick="fetchNews('science')">Science</button>
-      <button class="btn btn-outline-dark" onclick="fetchNews('technology')">Technology</button>
-      <button class="btn btn-outline-secondary" onclick="fetchNews('sports')">Sports</button>
+      <button class="btn btn-outline-success" onclick="fetchNews('world')">World</button>
+      <button class="btn btn-outline-danger" onclick="fetchNews('business')">Business</button>
+      <button class="btn btn-outline-info" onclick="fetchNews('technology')">Technology</button>
     </div>
 
     <div class="row" id="news-container"></div>
-
+    <div class="error-message" id="error-message"></div>
     <div class="loading-spinner" id="loading">
       <div class="spinner-border text-primary" role="status">
         <span class="visually-hidden">Loading...</span>
@@ -69,26 +72,94 @@
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
-    const apiKey = 'a12ff30d-4804-4cbb-9f84-bf6ff93b0c1b'; // Replace with your NewsAPI key
+    // RSS feed URLs categorized for filtering
+    const rssFeeds = {
+      general: [
+        'https://feeds.bbci.co.uk/news/rss.xml',
+        'https://feeds.reuters.com/reuters/topNews',
+        'https://www.theguardian.com/world/rss'
+      ],
+      world: [
+        'https://feeds.bbci.co.uk/news/world/rss.xml',
+        'https://feeds.reuters.com/reuters/worldNews',
+        'https://www.theguardian.com/world/rss'
+      ],
+      business: [
+        'https://feeds.bbci.co.uk/news/business/rss.xml',
+        'https://feeds.reuters.com/reuters/businessNews',
+        'https://www.theguardian.com/business/rss'
+      ],
+      technology: [
+        'https://feeds.bbci.co.uk/news/technology/rss.xml',
+        'https://feeds.reuters.com/reuters/technologyNews',
+        'https://www.theguardian.com/technology/rss'
+      ]
+    };
+
     const newsContainer = document.getElementById('news-container');
     const loadingSpinner = document.getElementById('loading');
+    const errorMessage = document.getElementById('error-message');
 
     async function fetchNews(category = 'general') {
       loadingSpinner.style.display = 'block';
+      errorMessage.style.display = 'none';
       newsContainer.innerHTML = '';
-      try {
-        const url = `https://newsapi.org/v2/top-headlines?category=${category}&language=en&apiKey=${apiKey}`;
-        const response = await fetch(url);
-        const data = await response.json();
 
-        if (data.status === 'ok') {
-          displayNews(data.articles);
-        } else {
-          newsContainer.innerHTML = '<p class="text-danger text-center">Error fetching news. Please try again later.</p>';
+      try {
+        const corsProxy = 'https://api.allorigins.win/raw?url=';
+        const feeds = rssFeeds[category];
+        const articles = [];
+
+        for (const feedUrl of feeds) {
+          try {
+            const response = await fetch(corsProxy + encodeURIComponent(feedUrl), {
+              method: 'GET',
+              headers: { 'Accept': 'application/xml' }
+            });
+
+            if (!response.ok) {
+              throw new Error(`Failed to fetch RSS feed from ${feedUrl}: ${response.status}`);
+            }
+
+            const text = await response.text();
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(text, 'text/xml');
+
+            // Check for XML parsing errors
+            if (xmlDoc.querySelector('parsererror')) {
+              throw new Error(`Invalid XML from ${feedUrl}`);
+            }
+
+            const items = xmlDoc.querySelectorAll('item');
+            items.forEach(item => {
+              const title = item.querySelector('title')?.textContent?.trim() || 'No title';
+              const description = item.querySelector('description')?.textContent?.trim() || 'No description available';
+              const link = item.querySelector('link')?.textContent?.trim() || '#';
+              const pubDate = item.querySelector('pubDate')?.textContent?.trim() || 'Unknown date';
+              const source = link !== '#' ? new URL(link).hostname.replace('www.', '') : 'Unknown source';
+
+              // Validate data before adding
+              if (title && link && link !== '#') {
+                articles.push({ title, description, link, pubDate, source });
+              }
+            });
+          } catch (feedError) {
+            console.warn(`Error fetching or parsing feed ${feedUrl}:`, feedError.message);
+            // Continue with other feeds instead of stopping
+          }
         }
+
+        if (articles.length === 0) {
+          throw new Error('No valid articles found from any feed.');
+        }
+
+        // Sort articles by publication date (newest first)
+        articles.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+        displayNews(articles);
       } catch (error) {
         console.error('Error:', error);
-        newsContainer.innerHTML = '<p class="text-danger text-center">Failed to load news. Try again later.</p>';
+        errorMessage.style.display = 'block';
+        errorMessage.textContent = 'Failed to load news. Please try again later.';
       } finally {
         loadingSpinner.style.display = 'none';
       }
@@ -101,22 +172,20 @@
       }
 
       articles.forEach(article => {
-        if (article.url && article.title && article.description) {
-          const newsCard = `
-            <div class="col-md-4 mb-4">
-              <div class="card news-card h-100 shadow-sm">
-                ${article.urlToImage ? `<img src="${article.urlToImage}" class="card-img-top" alt="${article.title}" style="height: 200px; object-fit: cover;">` : ''}
-                <div class="card-body d-flex flex-column">
-                  <h5 class="card-title">${article.title}</h5>
-                  <p class="card-text flex-grow-1">${article.description}</p>
-                  <p class="text-muted">Source: ${article.source.name}</p>
-                  <a href="${article.url}" target="_blank" class="btn btn-primary mt-auto">Read Full Article</a>
-                </div>
+        const newsCard = `
+          <div class="col-md-4 mb-4">
+            <div class="card news-card h-100 shadow-sm">
+              <div class="card-body d-flex flex-column">
+                <h5 class="card-title">${article.title}</h5>
+                <p class="card-text flex-grow-1">${article.description}</p>
+                <p class="text-muted">Source: ${article.source}</p>
+                <p class="text-muted small">Published: ${new Date(article.pubDate).toLocaleDateString()}</p>
+                <a href="${article.link}" target="_blank" class="btn btn-primary mt-auto">Read Full Article</a>
               </div>
             </div>
-          `;
-          newsContainer.innerHTML += newsCard;
-        }
+          </div>
+        `;
+        newsContainer.innerHTML += newsCard;
       });
     }
 
